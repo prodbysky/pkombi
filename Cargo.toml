@@ -3,5 +3,10 @@ name = "pkombi"
 version = "0.1.0"
 edition = "2021"
 readme = "README.md"
+license = "MIT"
+description = "Parser combinator library"
+repository = "https://github.com/prodbysky/pkombi"
+keywords = ["parser", "combinator"]
+categories = ["parsing"]
 
 [dependencies]

@@ -19,5 +19,3 @@ Also this is quite the functional thingamabobo
 - many(): matches 0 or more elements
 - many1(): matches atleast 1 or more elements
 - choice(possibilities): matches against the provided parsers and returns the first valid match
-
-
