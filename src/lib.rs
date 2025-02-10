@@ -1,4 +1,4 @@
-pub type ParserFunction<'a, I, O> = dyn Fn(I) -> Option<(O, I)> + 'a;
+pub type ParserFunction<'a, I, O> = dyn Fn(I) -> Option<(O, Option<I>)> + 'a;
 
 pub struct Parser<'a, I, O>(Box<ParserFunction<'a, &'a [I], O>>);
 pub type StringParser<'a, O> = Parser<'a, char, O>;
@@ -14,7 +14,7 @@ impl<'a, I: 'a, O: 'a> Parser<'a, I, O> {
     /// Create a new parser from the specified function
     pub fn new<F>(f: F) -> Self
     where
-        F: Fn(&'a [I]) -> Option<(O, &'a [I])> + 'a,
+        F: Fn(&'a [I]) -> Option<(O, Option<&'a [I]>)> + 'a,
     {
         Self(Box::new(f))
     }
@@ -34,12 +34,10 @@ impl<'a, I: 'a, O: 'a> Parser<'a, I, O> {
     /// If the function doesnt match then this parser doesn't consume the input and passes it
     /// forwards
     pub fn maybe(self) -> Parser<'a, I, Option<O>> {
-        Parser::new(move |input: &'a [I]| {
-            if let Some((p, r)) = self.0(input) {
-                Some((Some(p), r))
-            } else {
-                Some((None, input))
-            }
+        Parser::new(move |input: &'a [I]| match self.0(input) {
+            Some((p, Some(r))) => Some((Some(p), Some(r))),
+            Some((p, None)) => Some((Some(p), None)),
+            None => Some((None, Some(input))),
         })
     }
 
@@ -54,27 +52,26 @@ impl<'a, I: 'a, O: 'a> Parser<'a, I, O> {
 
     /// This combinator requires to match both parsers and if it doesn't match then it will fail
     pub fn and<O2: 'a>(self, other: Parser<'a, I, O2>) -> And<'a, I, O, O2> {
-        Parser::new(move |input: &'a [I]| {
-            if let Some((p1, r)) = self.0(input) {
-                if let Some((p2, r)) = other.0(r) {
-                    return Some(((p1, p2), r));
-                }
-            }
-            None
+        Parser::new(move |input: &'a [I]| match self.0(input) {
+            Some((p1, Some(r))) => match other.0(r) {
+                Some((p2, r)) => Some(((p1, p2), r)),
+                None => None,
+            },
+            Some((_p1, None)) => None,
+            None => None,
         })
     }
 
     /// This combinator first matches the `self` parser and then tries to match the second one and
     /// if it doesn't match then it doesn't fail (when compared to the `and` combinator)
     pub fn then_maybe<O2: 'a>(self, other: Parser<'a, I, O2>) -> ThenMaybe<'a, I, O, O2> {
-        Parser::new(move |input| {
-            if let Some((p1, r1)) = self.0(input) {
-                if let Some((p2, r2)) = other.0(r1) {
-                    return Some(((p1, Some(p2)), r2));
-                }
-                return Some(((p1, None), r1));
-            }
-            None
+        Parser::new(move |input| match self.0(input) {
+            Some((p1, Some(r))) => match other.0(r) {
+                Some((p2, r1)) => Some(((p1, Some(p2)), r1)),
+                None => Some(((p1, None), Some(r))),
+            },
+            Some((p1, None)) => Some(((p1, None), None)),
+            None => None,
         })
     }
 
@@ -84,9 +81,12 @@ impl<'a, I: 'a, O: 'a> Parser<'a, I, O> {
             let mut elements = vec![];
             while let Some((p, r)) = self.0(input) {
                 elements.push(p);
-                input = r;
+                match r {
+                    Some(r) => input = r,
+                    None => return Some((elements, None)),
+                }
             }
-            Some((elements, input))
+            Some((elements, Some(input)))
         })
     }
 
@@ -96,12 +96,15 @@ impl<'a, I: 'a, O: 'a> Parser<'a, I, O> {
             let mut elements = vec![];
             while let Some((p, r)) = self.0(input) {
                 elements.push(p);
-                input = r;
+                match r {
+                    Some(r) => input = r,
+                    None => return Some((Some(elements), None)),
+                }
             }
             if elements.is_empty() {
-                Some((None, input))
+                None
             } else {
-                Some((Some(elements), input))
+                Some((Some(elements), Some(input)))
             }
         })
     }
@@ -131,7 +134,7 @@ impl<'a, I: 'a, O: 'a> Parser<'a, I, O> {
         Parser::new(move |input: &[I]| self.0(input).filter(|(o, _r)| f(o)))
     }
 
-    pub fn parse(&self, input: &'a [I]) -> Option<(O, &'a [I])> {
+    pub fn parse(&self, input: &'a [I]) -> Option<(O, Option<&'a [I]>)> {
         self.0(input)
     }
 }
@@ -141,46 +144,95 @@ where
     F: Fn(char) -> bool + 'a,
 {
     Parser::new(move |input: &[char]| match input.split_at_checked(1) {
-        Some((p, r)) if !p.is_empty() && f(p[0]) => Some((p[0], r)),
+        Some((p, r)) if !p.is_empty() && f(p[0]) && !r.is_empty() => Some((p[0], Some(r))),
+        Some((p, r)) if !p.is_empty() && f(p[0]) && r.is_empty() => Some((p[0], None)),
         _ => None,
     })
 }
 
 pub fn char<'a>(c: char) -> StringParser<'a, char> {
     Parser::new(move |input: &[char]| match input.split_at_checked(1) {
-        Some((p, r)) if !p.is_empty() && p[0] == c => Some((p[0], r)),
+        Some((p, r)) if !p.is_empty() && p[0] == c && !r.is_empty() => Some((p[0], Some(r))),
+        Some((p, r)) if !p.is_empty() && p[0] == c && r.is_empty() => Some((p[0], None)),
         _ => None,
     })
 }
 
 pub fn digit<'a>() -> StringParser<'a, char> {
     Parser::new(move |input: &[char]| match input.split_at_checked(1) {
-        Some((p, r)) if !p.is_empty() && p[0].is_ascii_digit() => Some((p[0], r)),
+        Some((p, r)) if !p.is_empty() && p[0].is_ascii_digit() && !r.is_empty() => {
+            Some((p[0], Some(r)))
+        }
+        Some((p, r)) if !p.is_empty() && p[0].is_ascii_digit() && r.is_empty() => {
+            Some((p[0], None))
+        }
         _ => None,
     })
 }
 
+pub trait CollectChars {
+    fn into_string(&self) -> String;
+}
+
+impl CollectChars for char {
+    fn into_string(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl CollectChars for Vec<char> {
+    fn into_string(&self) -> String {
+        self.iter().collect()
+    }
+}
+
+impl<T: CollectChars> CollectChars for Option<T> {
+    fn into_string(&self) -> String {
+        self.as_ref().map(|t| t.into_string()).unwrap_or_default()
+    }
+}
+
+impl<A: CollectChars, B: CollectChars> CollectChars for (A, B) {
+    fn into_string(&self) -> String {
+        let mut s = String::new();
+        s.push_str(&self.0.into_string());
+        s.push_str(&self.1.into_string());
+        s
+    }
+}
+
+impl<'a, I: 'a, O: CollectChars + 'a> Parser<'a, I, O> {
+    pub fn into_string(self) -> Parser<'a, I, String> {
+        self.map(|o| o.into_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    const EMPTY: &[char] = &[];
     use super::*;
     #[test]
     fn single_char() {
-        let c_parser = char('c');
-        assert_eq!(c_parser.parse(&['c']).unwrap(), ('c', EMPTY))
+        let c_parser = char('c').into_string();
+        assert_eq!(c_parser.parse(&['c']).unwrap(), ("c".to_string(), None))
     }
     #[test]
     fn single_digit() {
-        let digit_parser = digit();
-        assert_eq!(digit_parser.parse(&['1']).unwrap(), ('1', EMPTY))
+        let digit_parser = digit().into_string();
+        assert_eq!(digit_parser.parse(&['1']).unwrap(), ("1".to_string(), None))
     }
     #[test]
     fn or() {
         let c_parser = char('c');
         let digit_parser = digit();
-        let c_or_digit_parser = c_parser.or(digit_parser);
-        assert_eq!(c_or_digit_parser.parse(&['c']), Some(('c', EMPTY)));
-        assert_eq!(c_or_digit_parser.parse(&['1']), Some(('1', EMPTY)));
+        let c_or_digit_parser = c_parser.or(digit_parser).into_string();
+        assert_eq!(
+            c_or_digit_parser.parse(&['c']),
+            Some(("c".to_string(), None))
+        );
+        assert_eq!(
+            c_or_digit_parser.parse(&['1']),
+            Some(("1".to_string(), None))
+        );
         assert_eq!(c_or_digit_parser.parse(&['a']), None);
     }
 
@@ -188,14 +240,17 @@ mod tests {
     fn and() {
         let c_parser = char('c');
         let d_parser = char('d');
-        let c_and_d_parser = c_parser.and(d_parser);
+        let c_and_d_parser = c_parser.and(d_parser).into_string();
         let c: &[char] = &['c'];
-        assert_eq!(c_and_d_parser.parse(&['c', 'd']), Some((('c', 'd'), EMPTY)));
+        assert_eq!(
+            c_and_d_parser.parse(&['c', 'd']),
+            Some(("cd".to_string(), None))
+        );
         assert_eq!(c_and_d_parser.parse(&['c']), None);
         assert_eq!(c_and_d_parser.parse(&['c', 'c']), None);
         assert_eq!(
             c_and_d_parser.parse(&['c', 'd', 'c']),
-            Some((('c', 'd'), c))
+            Some(("cd".to_string(), Some(c)))
         );
         assert_eq!(c_and_d_parser.parse(&['a']), None);
     }
@@ -205,61 +260,58 @@ mod tests {
         let c_parser = char('c');
         let d_parser = char('d');
         let c: &[char] = &['c'];
-        let c_and_then_maybe_d_parser = c_parser.then_maybe(d_parser);
+        let c_and_then_maybe_d_parser = c_parser.then_maybe(d_parser).into_string();
         assert_eq!(
             c_and_then_maybe_d_parser.parse(&['c', 'd']),
-            Some((('c', Some('d')), EMPTY))
+            Some(("cd".to_string(), None))
         );
         assert_eq!(
             c_and_then_maybe_d_parser.parse(&['c', 'c']),
-            Some((('c', None), c))
+            Some(("c".to_string(), Some(c)))
         );
         assert_eq!(
             c_and_then_maybe_d_parser.parse(&['c', 'd', 'c']),
-            Some((('c', Some('d')), c))
+            Some(("cd".to_string(), Some(c)))
         );
         assert_eq!(c_and_then_maybe_d_parser.parse(&['d', 'c']), None);
     }
     #[test]
     fn many() {
-        let many_c_parser = char('c').many();
+        let many_c_parser = char('c').many().into_string();
         let d: &[char] = &['d'];
         assert_eq!(
             many_c_parser.parse(&['c', 'c', 'c']),
-            Some((vec!['c', 'c', 'c'], EMPTY))
+            Some(("ccc".to_string(), None))
         );
         assert_eq!(
             many_c_parser.parse(&['c', 'c', 'd']),
-            Some((vec!['c', 'c'], d))
+            Some(("cc".to_string(), Some(d)))
         );
-        assert_eq!(many_c_parser.parse(&['c', 'd']), Some((vec!['c'], d)));
+        assert_eq!(
+            many_c_parser.parse(&['c', 'd']),
+            Some(("c".to_string(), Some(d)))
+        );
     }
 
     #[test]
     fn many1() {
-        let many1_c_parser = char('c').many1();
-        let d: &[char] = &['d'];
+        let many1_c_parser = char('c').many1().into_string();
         assert_eq!(
             many1_c_parser.parse(&['c', 'c', 'c']),
-            Some((Some(vec!['c', 'c', 'c']), EMPTY))
+            Some(("ccc".to_string(), None))
         );
-        assert_eq!(many1_c_parser.parse(&['d']), Some((None, d)));
+        assert_eq!(many1_c_parser.parse(&['d']), None);
     }
 
     #[test]
     fn identifier() {
         let ident_parser = satisfy(|c: char| c.is_alphabetic() || c == '_')
-            .then_maybe(satisfy(|c: char| c.is_alphanumeric() || c == '_').many());
+            .then_maybe(satisfy(|c: char| c.is_alphanumeric() || c == '_').many())
+            .into_string();
 
         assert_eq!(
             ident_parser.parse(&['h', 'e', 'l', 'l', 'o', '_', 'w', 'o', 'r', 'l', 'd']),
-            Some((
-                (
-                    'h',
-                    Some(vec!['e', 'l', 'l', 'o', '_', 'w', 'o', 'r', 'l', 'd'])
-                ),
-                EMPTY
-            ))
+            Some(("hello_world".to_string(), None))
         );
     }
 }
