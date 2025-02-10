@@ -131,9 +131,19 @@ impl<'a, I: 'a, O: 'a> Parser<'a, I, O> {
         Parser::new(move |input: &[I]| self.0(input).filter(|(o, _r)| f(o)))
     }
 
-    pub fn parse(self, input: &'a [I]) -> Option<(O, &'a [I])> {
+    pub fn parse(&self, input: &'a [I]) -> Option<(O, &'a [I])> {
         self.0(input)
     }
+}
+
+pub fn satisfy<'a, F>(f: F) -> StringParser<'a, char>
+where
+    F: Fn(char) -> bool + 'a,
+{
+    Parser::new(move |input: &[char]| match input.split_at_checked(1) {
+        Some((p, r)) if !p.is_empty() && f(p[0]) => Some((p[0], r)),
+        _ => None,
+    })
 }
 
 pub fn char<'a>(c: char) -> StringParser<'a, char> {
@@ -152,15 +162,104 @@ pub fn digit<'a>() -> StringParser<'a, char> {
 
 #[cfg(test)]
 mod tests {
+    const EMPTY: &[char] = &[];
+    use super::*;
     #[test]
-    fn xd_parser() {
-        let float_parser = super::digit()
-            .many()
-            .maybe()
-            .then_maybe(super::char('.').and(super::digit().many()));
+    fn single_char() {
+        let c_parser = char('c');
+        assert_eq!(c_parser.parse(&['c']).unwrap(), ('c', EMPTY))
+    }
+    #[test]
+    fn single_digit() {
+        let digit_parser = digit();
+        assert_eq!(digit_parser.parse(&['1']).unwrap(), ('1', EMPTY))
+    }
+    #[test]
+    fn or() {
+        let c_parser = char('c');
+        let digit_parser = digit();
+        let c_or_digit_parser = c_parser.or(digit_parser);
+        assert_eq!(c_or_digit_parser.parse(&['c']), Some(('c', EMPTY)));
+        assert_eq!(c_or_digit_parser.parse(&['1']), Some(('1', EMPTY)));
+        assert_eq!(c_or_digit_parser.parse(&['a']), None);
+    }
 
-        let input: Vec<_> = ".123".chars().collect();
-        let (parsed, _) = float_parser.parse(&input).unwrap();
-        dbg!(parsed);
+    #[test]
+    fn and() {
+        let c_parser = char('c');
+        let d_parser = char('d');
+        let c_and_d_parser = c_parser.and(d_parser);
+        let c: &[char] = &['c'];
+        assert_eq!(c_and_d_parser.parse(&['c', 'd']), Some((('c', 'd'), EMPTY)));
+        assert_eq!(c_and_d_parser.parse(&['c']), None);
+        assert_eq!(c_and_d_parser.parse(&['c', 'c']), None);
+        assert_eq!(
+            c_and_d_parser.parse(&['c', 'd', 'c']),
+            Some((('c', 'd'), c))
+        );
+        assert_eq!(c_and_d_parser.parse(&['a']), None);
+    }
+
+    #[test]
+    fn then_maybe() {
+        let c_parser = char('c');
+        let d_parser = char('d');
+        let c: &[char] = &['c'];
+        let c_and_then_maybe_d_parser = c_parser.then_maybe(d_parser);
+        assert_eq!(
+            c_and_then_maybe_d_parser.parse(&['c', 'd']),
+            Some((('c', Some('d')), EMPTY))
+        );
+        assert_eq!(
+            c_and_then_maybe_d_parser.parse(&['c', 'c']),
+            Some((('c', None), c))
+        );
+        assert_eq!(
+            c_and_then_maybe_d_parser.parse(&['c', 'd', 'c']),
+            Some((('c', Some('d')), c))
+        );
+        assert_eq!(c_and_then_maybe_d_parser.parse(&['d', 'c']), None);
+    }
+    #[test]
+    fn many() {
+        let many_c_parser = char('c').many();
+        let d: &[char] = &['d'];
+        assert_eq!(
+            many_c_parser.parse(&['c', 'c', 'c']),
+            Some((vec!['c', 'c', 'c'], EMPTY))
+        );
+        assert_eq!(
+            many_c_parser.parse(&['c', 'c', 'd']),
+            Some((vec!['c', 'c'], d))
+        );
+        assert_eq!(many_c_parser.parse(&['c', 'd']), Some((vec!['c'], d)));
+    }
+
+    #[test]
+    fn many1() {
+        let many1_c_parser = char('c').many1();
+        let d: &[char] = &['d'];
+        assert_eq!(
+            many1_c_parser.parse(&['c', 'c', 'c']),
+            Some((Some(vec!['c', 'c', 'c']), EMPTY))
+        );
+        assert_eq!(many1_c_parser.parse(&['d']), Some((None, d)));
+    }
+
+    #[test]
+    fn identifier() {
+        let ident_parser = satisfy(|c: char| c.is_alphabetic() || c == '_')
+            .then_maybe(satisfy(|c: char| c.is_alphanumeric() || c == '_').many());
+
+        assert_eq!(
+            ident_parser.parse(&['h', 'e', 'l', 'l', 'o', '_', 'w', 'o', 'r', 'l', 'd']),
+            Some((
+                (
+                    'h',
+                    Some(vec!['e', 'l', 'l', 'o', '_', 'w', 'o', 'r', 'l', 'd'])
+                ),
+                EMPTY
+            ))
+        );
     }
 }
